@@ -1,0 +1,124 @@
+def getStock(dt):
+    #根據日期抓取台股資料，過程中會避開沒有資料天數
+    import requests 
+    import pandas as pd
+    r = requests.post('http://www.twse.com.tw/exchangeReport/MI_INDEX?response=csv&date=' + dt + '&type=ALL')    
+    if len(r.text.split('\r\n')) >1:          #判斷有取得台股資料才進行以下的轉換
+        tickers = []                          #List空白串列
+        for i in r.text.split('\r\n'):        #針對 \r\n 進行切行
+            if (len(i.split('",')) == 17 and i[0] != '='):
+                _ticker = i.split('",')       #使用 ", 區隔每一個價格
+                _ticker = [t.replace('"','').replace(',','') for t in _ticker] #將左邊的" 數字千分為 取代為空字元        
+                tickers.append(_ticker)       #一直新增到指定變數
+        df = pd.DataFrame(tickers)            #轉換成 DataFrame
+        df.columns = df.loc[0,:]              #將第一列轉換成columns名稱
+        df.drop(0, axis = 0 , inplace = True) #刪除第一列
+        df.rename(columns={'':'成交日期'},inplace=True)     #將最後一個空白欄位改變 成交日期
+        df['成交日期'] = dt                    #將抓取日期寫入到該欄位
+        return(df)
+
+
+# In[2]:
+
+
+def saveStock(dt):
+    #準備驗證將單一天資料回寫回資料庫
+    #新增到資料庫
+    import pyodbc
+    from sqlalchemy import create_engine
+    import urllib
+    #取出單天資料
+    stock = getStock(dt)
+    params = urllib.parse.quote_plus(r'DRIVER={SQL Server};SERVER=127.0.0.1;DATABASE=TWSEDB;Trusted_Connection=yes')
+    conn_str = 'mssql+pyodbc:///?odbc_connect={}'.format(params)
+    engine = create_engine(conn_str)
+    #將資料回寫後端資料庫
+    stock.to_sql(name='tblTWSE',con=engine, if_exists='append',index=False,schema="dbo")
+    return
+
+
+# In[5]:
+
+
+#判斷是否已經該日有資料
+def existsDB(dt):
+    import pyodbc 
+    import pandas as pd
+    conn = pyodbc.connect("DRIVER={SQL Server};SERVER=127.0.0.1;Trusted_Connection=yes")  
+    stmt = "SELECT count(*)+(SELECT count(*) as cnt FROM TWSEDB.dbo.tblTWDT WHERE 成交日期 ='{}') as cnt FROM TWSEDB.dbo.tblTWSE s WHERE 成交日期 ='{}'".format(dt,dt)
+    # 執行上述命令抓取資料
+    df = pd.read_sql(stmt,conn)
+    #怎樣匯出成excel    
+    if df.loc[0,'cnt']>0:
+        return True
+
+
+# In[9]:
+
+
+#判斷抓取時間起迄 注意這邊可以設定從哪年哪月哪日開始抓取 20180101
+def queryStartEnd():
+    import pyodbc 
+    import pandas as pd
+    conn = pyodbc.connect("DRIVER={SQL Server};SERVER=127.0.0.1;Trusted_Connection=yes")  
+    stmt = """
+    declare @dt1 varchar(8)=(select max(成交日期) from TWSEDB.dbo.tblTWSE);
+    declare @dt2 varchar(8)=(select max(成交日期) from TWSEDB.dbo.tblTWDT);
+	select @dt1 = isnull(@dt1,'20180101') , @dt2 = isnull(@dt2,'20180101')
+    select case when @dt1>@dt2 then @dt1 else @dt2 end as startdt, convert(varchar(8),getutcdate()+8/24.0,112) as enddt
+    """
+    # 執行上述命令抓取資料
+    df = pd.read_sql(stmt,conn)     
+    return df
+
+print( queryStartEnd().iloc[0,0] , queryStartEnd().iloc[0,1])
+
+
+# In[8]:
+
+
+#新增抓取紀錄
+def saveStatus(dt,total,status):
+    import pyodbc 
+    import pandas as pd
+    conn = pyodbc.connect("DRIVER={SQL Server};SERVER=127.0.0.1;Trusted_Connection=yes")  
+    stmt = "BEGIN TRY INSERT INTO TWSEDB.dbo.tblTWDT([成交日期],[筆數],[狀態]) VALUES('{}','{}','{}') END TRY BEGIN CATCH  END CATCH".format(dt,total,status)    
+    # 執行上述命令INSERT資料
+    cursor = conn.cursor()
+    cursor.execute(stmt)
+    conn.commit()    
+    return True
+
+
+# In[12]:
+
+
+##根據DB資料抓取尚未進入股價
+import pandas as pd
+from time import sleep
+#根據指定的日期抓取台股資料，並且儲存成為excel
+
+start_date = queryStartEnd().iloc[0,0]
+end_date   = queryStartEnd().iloc[0,1]
+#取得時間區間
+daterange = pd.date_range(start_date, end_date)
+try:
+    for dt in daterange:
+        _dt = dt.strftime("%Y%m%d") 
+        if not existsDB(_dt):
+            _df = getStock(_dt)
+
+            if _df is not None:
+                print(_dt , _df.shape[0])
+                #改成新增資料庫
+                saveStock(_dt)
+                saveStatus(_dt , _df.shape[0] , '抓取成功')
+            else:
+                print(_dt , '股市休市')
+                saveStatus(_dt , 0 , '股市休市')
+            sleep(3)
+        else:
+            print(_dt , '資料存在')              
+except:
+    print('異常發生點於',_dt)
+print('抓取完成')
