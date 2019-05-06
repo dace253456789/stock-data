@@ -1,0 +1,24 @@
+USE [TWSEDB] 
+GO
+
+create or alter trigger tri_tblTWSE20181109_insert on [dbo].[tblTWSE20181109] 
+instead of insert 
+AS 
+BEGIN 
+    SET NOCOUNT ON
+
+    if not exists(
+    select  i.*
+    from    inserted i  join [dbo].[tblTWSE20181109] t
+         on i.成交日期 = t.成交日期 and i.證券代號 = t.證券代號) 
+    begin
+        insert into [dbo].[tblTWSE20181109] select * from inserted i
+    end
+END 
+GO
+
+alter table [tblTWSE20181109] alter column 證券代號 varchar(30) 
+alter table [tblTWSE20181109] alter column 成交日期 varchar(30) 
+go 
+create index idx_stock_date_20181109 on [tblTWSE20181109](證券代號,成交日期)
+go
